@@ -205,9 +205,8 @@ async function playWav(buf) {
         audioContext = new (window.AudioContext || window.webkitAudioContext)();
     }
     try {
-        // The server sends WAV (with header), which browsers can decode
-        const arrayBuffer = await buf.arrayBuffer();
-        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+        // e.data is already an ArrayBuffer (binaryType = 'arraybuffer')
+        const audioBuffer = await audioContext.decodeAudioData(buf);
         const source = audioContext.createBufferSource();
         source.buffer = audioBuffer;
         source.connect(audioContext.destination);
