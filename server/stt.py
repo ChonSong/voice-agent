@@ -57,21 +57,38 @@ def transcribe_audio(wav_path: str) -> Optional[str]:
         if _model is None:
             _model = load_model()
 
+        # Noise gate: check RMS audio level first
+        import wave
+        with wave.open(wav_path, 'rb') as wf:
+            n = wf.getnframes()
+            raw = wf.readframes(n)
+        
+        if len(raw) < 1000:  # Less than ~30ms of audio at 16kHz
+            logger.warning("Audio too short, skipping transcription")
+            return None
+        
         segments, info = _model.transcribe(
             wav_path,
             language="en",
             beam_size=5,
-            vad_filter=False,  # Disabled — WebM decode audio is too quiet for VAD
+            vad_filter=False,
         )
 
         transcript = " ".join(segment.text for segment in segments).strip()
-        logger.info(
-            "Transcribed via Distil-Whisper+Faster-Whisper: %s (%.2fs, %.1f%% conf)",
-            transcript[:80],
-            info.duration,
-            info.language_probability * 100,
-        )
-        return transcript
+        
+        # Filter obvious noise hallucinations
+        if transcript.lower().strip() in ("you", "thank you.", "thanks.", "[Music]", "[BLANK_AUDIO]"):
+            logger.info("Filtered noise hallucination: '%s'", transcript)
+            return None
+        
+        if transcript:
+            logger.info(
+                "Transcribed via Distil-Whisper+Faster-Whisper: %s (%.2fs, %.1f%% conf)",
+                transcript[:80],
+                info.duration,
+                info.language_probability * 100,
+            )
+        return transcript if transcript else None
 
     except Exception as e:
         logger.error("Transcription error: %s", e)

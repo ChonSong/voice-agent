@@ -197,6 +197,33 @@ console.log('Three.js initialized');
 let isSpeaking = false;
 let targetPulse = 0.05;
 let currentPulse = 0.05;
+let isRecording = false;
+
+// ── Audio Playback (WAV) ──────────────────────────────────────────────────────
+async function playWav(buf) {
+    if (!audioContext) {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    try {
+        // The server sends WAV (with header), which browsers can decode
+        const arrayBuffer = await buf.arrayBuffer();
+        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+        const source = audioContext.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(audioContext.destination);
+        source.start();
+        setMode('spk');
+        isSpeaking = true;
+        targetPulse = Math.min(0.35, targetPulse + 0.15 + Math.random() * 0.1);
+        source.onended = () => {
+            isSpeaking = false;
+            setMode('idle');
+        };
+    } catch(e) {
+        console.error('Audio decode error:', e);
+        t.textContent = 'Audio error: ' + e.message;
+    }
+}
 
 // ── WebSocket ─────────────────────────────────────────────────────────────────
 function setConn(o) {
@@ -249,7 +276,7 @@ function connect() {
             }
         } else {
             console.log('WS binary:', e.data.byteLength, 'bytes');
-            playAudio(e.data);
+            playWav(e.data);
         }
     };
 }
@@ -274,12 +301,14 @@ function playAudio(buf) {
 
 // ── Recording ─────────────────────────────────────────────────────────────────
 mb.onmousedown = mb.ontouchstart = function() {
+    if (isRecording) return;
     if (!audioContext) {
         audioContext = new (window.AudioContext || window.webkitAudioContext)();
         audioContext.createAnalyser();
     }
     navigator.mediaDevices.getUserMedia({audio: true}).then(function(st) {
         mic = st;
+        isRecording = true;
         var mr = new MediaRecorder(st);
         var chunks = [];
         mr.ondataavailable = function(e) {
@@ -288,19 +317,19 @@ mb.onmousedown = mb.ontouchstart = function() {
             }
         };
         mr.start(100);
-        recording = true;
         mb.classList.add('rec');
         setMode('rec');
         
         var stop = function() {
+            isRecording = false;
             mr.stop();
             st.getTracks().forEach(function(x) { x.stop(); });
-            recording = false;
             mb.classList.remove('rec');
             setMode('thk');
             if (ws && ws.readyState === 1) {
                 ws.send(JSON.stringify({type: 'audio_end'}));
             }
+            mb.onmouseup = mb.ontouchend = null;
         };
         mb.onmouseup = mb.ontouchend = stop;
     }).catch(function(e) {

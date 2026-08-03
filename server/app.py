@@ -9,6 +9,7 @@ Browser → WebSocket → save PCM → transcribe → TTS stream → browser
 """
 
 import asyncio
+import io
 import json
 import logging
 import os
@@ -196,6 +197,7 @@ async def websocket_handler(request):
 
     audio_chunks: list[bytes] = []
     is_webm = False
+    transcription_lock = asyncio.Lock()
 
     logger.info("WebSocket client connected")
 
@@ -213,58 +215,58 @@ async def websocket_handler(request):
                 msg_type = data.get("type")
 
                 if msg_type == "audio_start":
+                    # If already processing, ignore overlapping audio_start
+                    if transcription_lock.locked():
+                        logger.warning("Ignoring overlapping audio_start")
+                        continue
                     audio_chunks.clear()
                     is_webm = False
                     await ws.send_json({"type": "status", "text": "Recording..."})
 
                 elif msg_type == "audio_end":
-                    await ws.send_json({"type": "status", "text": "Transcribing..."})
-
-                    if not audio_chunks:
-                        await ws.send_json({"type": "transcript", "text": ""})
-                        await ws.send_json({"type": "done"})
+                    if transcription_lock.locked():
+                        logger.warning("Ignoring overlapping audio_end")
                         continue
+                    
+                    async with transcription_lock:
+                        await ws.send_json({"type": "status", "text": "Transcribing..."})
 
-                    # Save audio to file and transcribe
-                    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-                        wav_path = tmp.name
-
-                    try:
-                        if is_webm:
-                            # Combine all WebM chunks and decode to PCM
-                            combined = b''.join(audio_chunks)
-                            pcm = await asyncio.to_thread(decode_audio_to_pcm, combined, SAMPLE_RATE)
-                            if pcm:
-                                pcm_to_wav([pcm], SAMPLE_RATE, wav_path)
-                        else:
-                            pcm_to_wav(audio_chunks, SAMPLE_RATE, wav_path)
-                        
-                        # Send periodic keepalive to prevent browser timeout
-                        async def keepalive():
-                            while not ws.closed:
-                                await asyncio.sleep(3)
-                                if not ws.closed:
-                                    try:
-                                        await ws.send_json({"type": "status", "text": "Still transcribing..."})
-                                    except:
-                                        break
-                        
-                        # Run transcription with keepalive
-                        keepalive_task = asyncio.create_task(keepalive())
-                        try:
-                            transcript = await asyncio.to_thread(transcribe_audio, wav_path)
-                        finally:
-                            keepalive_task.cancel()
-                        
-                        if transcript:
-                            await ws.send_json({"type": "transcript", "text": transcript})
-                            await respond_with_tts(ws, transcript)
-                        else:
-                            await ws.send_json({"type": "transcript", "text": "(could not transcribe)"})
+                        if not audio_chunks:
+                            await ws.send_json({"type": "transcript", "text": ""})
                             await ws.send_json({"type": "done"})
-                    finally:
-                        os.unlink(wav_path)
-                        audio_chunks.clear()
+                            continue
+
+                        # Save audio to file and transcribe
+                        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                            wav_path = tmp.name
+
+                        try:
+                            if is_webm:
+                                # Combine all WebM chunks and decode to PCM
+                                combined = b''.join(audio_chunks)
+                                pcm = await asyncio.to_thread(decode_audio_to_pcm, combined, SAMPLE_RATE)
+                                if pcm:
+                                    pcm_to_wav([pcm], SAMPLE_RATE, wav_path)
+                                else:
+                                    await ws.send_json({"type": "transcript", "text": "(could not decode audio)"})
+                                    await ws.send_json({"type": "done"})
+                                    audio_chunks.clear()
+                                    continue
+                            else:
+                                pcm_to_wav(audio_chunks, SAMPLE_RATE, wav_path)
+                            
+                            # Run transcription
+                            transcript = await asyncio.to_thread(transcribe_audio, wav_path)
+                            
+                            if transcript and transcript.strip():
+                                await ws.send_json({"type": "transcript", "text": transcript})
+                                await respond_with_tts(ws, transcript)
+                            else:
+                                await ws.send_json({"type": "transcript", "text": "(no speech detected)"})
+                                await ws.send_json({"type": "done"})
+                        finally:
+                            os.unlink(wav_path)
+                            audio_chunks.clear()
 
                 elif msg_type == "text":
                     text = data.get("text", "")
@@ -282,7 +284,7 @@ async def websocket_handler(request):
 
 
 async def respond_with_tts(ws, text: str):
-    """Generate TTS audio and stream it back via WebSocket."""
+    """Generate TTS audio and stream it back via WebSocket as WAV."""
     await ws.send_json({"type": "status", "text": "Speaking..."})
 
     try:
@@ -293,13 +295,26 @@ async def respond_with_tts(ws, text: str):
             await ws.send_json({"type": "done"})
             return
 
-        # Send sample rate as first text message before binary chunks
-        await ws.send_json({"type": "audio_start", "sampleRate": sample_rate})
-
-        # Stream audio chunks
+        # Collect all audio chunks
+        chunks = []
         for chunk in audio_iter:
-            if not ws.closed:
-                await ws.send_bytes(chunk)
+            chunks.append(chunk)
+        
+        audio_data = b''.join(chunks)
+        
+        # Check if it's already WAV (has RIFF header)
+        if audio_data[:4] == b'RIFF':
+            # Already WAV, send directly
+            await ws.send_bytes(audio_data)
+        else:
+            # Raw PCM, wrap in WAV header
+            wav_buf = io.BytesIO()
+            with wave.open(wav_buf, 'wb') as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(sample_rate)
+                wf.writeframes(audio_data)
+            await ws.send_bytes(wav_buf.getvalue())
 
         await ws.send_json({"type": "done"})
     except Exception as exc:
