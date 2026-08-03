@@ -95,19 +95,24 @@ def stream_tts(text: str):
 
 
 def transcribe_audio(wav_path: str):
-    """Transcribe a WAV file using the Hermes agent's configured STT provider (faster-whisper)."""
+    """Transcribe a WAV file using Distil-Whisper via Faster-Whisper (CTranslate2)."""
     try:
+        # Import the local Distil-Whisper module (lazy import so Hermes deps work)
+        import sys, os
+        sys.path.insert(0, os.path.dirname(__file__))
+        from stt import transcribe_audio as distil_transcribe
+        transcript = distil_transcribe(wav_path)
+        return transcript
+    except ImportError:
+        # Fallback: Hermes faster-whisper tiny if Distil-Whisper model not downloaded
         from tools.transcription_tools import transcribe_audio as hermes_transcribe
         result = hermes_transcribe(wav_path)
         if isinstance(result, dict):
             if result.get("success"):
-                transcript = result.get("transcript", "")
-                logger.info("Transcribed via Hermes STT: %s", transcript[:80])
-                return transcript.strip()
+                return result.get("transcript", "").strip()
             else:
-                logger.error("Hermes STT error: %s", result.get("error"))
+                logger.error("Hermes STT fallback error: %s", result.get("error"))
                 return None
-        # Fallback if it returns a string directly
         return str(result).strip() if result else None
     except Exception as e:
         logger.error("Transcription error: %s", e)
