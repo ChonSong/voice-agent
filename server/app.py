@@ -95,51 +95,22 @@ def stream_tts(text: str):
 
 
 def transcribe_audio(wav_path: str):
-    """Transcribe a WAV file using Distil-Whisper (fast, local, free)."""
+    """Transcribe a WAV file using the Hermes agent's configured STT provider (faster-whisper)."""
     try:
-        import wave, numpy as np, torch, os
-        
-        # Cache model globally
-        if not hasattr(transcribe_audio, '_model') or transcribe_audio._model is None:
-            from transformers import WhisperProcessor, WhisperForConditionalGeneration
-            model_dir = '/tmp/distil-whisper-local'
-            logger.info('Loading Distil-Whisper model...')
-            transcribe_audio._processor = WhisperProcessor.from_pretrained(model_dir, local_files_only=True)
-            transcribe_audio._model = WhisperForConditionalGeneration.from_pretrained(
-                model_dir, local_files_only=True, torch_dtype=torch.float32
-            )
-            transcribe_audio._model.eval()
-            logger.info('Distil-Whisper model loaded')
-        
-        # Load audio
-        wf = wave.open(wav_path, 'rb')
-        sample_rate = wf.getframerate()
-        nframes = wf.getnframes()
-        raw_data = wf.readframes(nframes)
-        wf.close()
-        
-        audio = np.frombuffer(raw_data, dtype=np.int16).astype(np.float32) / 32768.0
-        
-        # Resample to 16kHz if needed
-        if sample_rate != 16000:
-            from scipy.signal import resample
-            n_samples = int(len(audio) * 16000 / sample_rate)
-            audio = resample(audio, n_samples)
-        
-        # Transcribe
-        input_features = transcribe_audio._processor(
-            audio, sampling_rate=16000, return_tensors='pt'
-        ).input_features
-        
-        with torch.no_grad():
-            predicted_ids = transcribe_audio._model.generate(input_features)
-        
-        transcript = transcribe_audio._processor.batch_decode(predicted_ids, skip_special_tokens=True)[0]
-        logger.info('Transcribed %s via Distil-Whisper', os.path.basename(wav_path))
-        return transcript.strip()
-        
+        from tools.transcription_tools import transcribe_audio as hermes_transcribe
+        result = hermes_transcribe(wav_path)
+        if isinstance(result, dict):
+            if result.get("success"):
+                transcript = result.get("transcript", "")
+                logger.info("Transcribed via Hermes STT: %s", transcript[:80])
+                return transcript.strip()
+            else:
+                logger.error("Hermes STT error: %s", result.get("error"))
+                return None
+        # Fallback if it returns a string directly
+        return str(result).strip() if result else None
     except Exception as e:
-        logger.error('Transcription error: %s', e)
+        logger.error("Transcription error: %s", e)
         return None
 
 
