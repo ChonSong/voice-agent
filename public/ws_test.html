@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html>
+<head><title>WS Test</title></head>
+<body>
+<div id="status">Loading...</div>
+<div id="log"></div>
+<script>
+var status = document.getElementById('status');
+var log = document.getElementById('log');
+function addLog(msg) {
+    var div = document.createElement('div');
+    div.textContent = new Date().toLocaleTimeString() + ': ' + msg;
+    log.appendChild(div);
+    console.log(msg);
+}
+
+addLog('Script starting');
+addLog('Protocol: ' + location.protocol);
+addLog('Host: ' + location.host);
+
+try {
+    var wsUrl = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/ws';
+    addLog('WS URL: ' + wsUrl);
+    
+    var ws = new WebSocket(wsUrl);
+    addLog('WebSocket created, readyState: ' + ws.readyState);
+    
+    ws.onopen = function() {
+        addLog('WS OPENED!');
+        status.textContent = 'Connected!';
+        ws.send(JSON.stringify({type: 'text', text: 'Hello from browser'}));
+    };
+    
+    ws.onmessage = function(e) {
+        addLog('WS message: ' + (typeof e.data === 'string' ? e.data.substring(0, 100) : 'binary ' + e.data.byteLength));
+    };
+    
+    ws.onerror = function(e) {
+        addLog('WS ERROR: ' + JSON.stringify(e));
+        status.textContent = 'Error';
+    };
+    
+    ws.onclose = function(e) {
+        addLog('WS CLOSED: ' + e.code + ' ' + e.reason);
+        status.textContent = 'Closed';
+    };
+    
+    // Poll for open state
+    var n = 0;
+    var iv = setInterval(function() {
+        n++;
+        addLog('Poll ' + n + ': readyState=' + ws.readyState);
+        if (ws.readyState === 1) {
+            clearInterval(iv);
+            status.textContent = 'Connected (poll)!';
+        } else if (n > 20) {
+            clearInterval(iv);
+            addLog('Poll timeout');
+        }
+    }, 100);
+    
+} catch(e) {
+    addLog('EXCEPTION: ' + e.message);
+    status.textContent = 'Exception: ' + e.message;
+}
+</script>
+</body>
+</html>

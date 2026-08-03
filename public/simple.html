@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Voice Agent</title>
+<style>
+body{margin:0;font-family:system-ui;background:#0a0a0f;color:#eee;padding:2rem}
+#s{display:flex;gap:1rem;margin-bottom:1rem;font-size:.75rem}
+.d{width:8px;height:8px;border-radius:50%;background:#555;display:inline-block}
+.d.a{background:#4f4}
+#t{min-height:3rem;font-size:1.1rem;color:#ccc;border:1px solid #333;padding:1rem;margin:1rem 0}
+#ctrl{display:flex;gap:.75rem}
+button,input{padding:.75rem 1rem;border:none;border-radius:.5rem;font-size:1rem}
+#m{background:#4f4;color:#000;cursor:pointer}
+#txt{flex:1;background:rgba(255,255,255,.1);color:#fff;border:1px solid #333}
+#snd{background:#4bf;color:#000;cursor:pointer}
+</style>
+</head>
+<body>
+<h1>Voice Agent Test</h1>
+<div id="s"><span><span class="d" id="cd"></span><span id="ct">Connecting...</span></span></div>
+<div id="t">Press the mic and speak, or type a message below...</div>
+<div id="ctrl">
+<button id="m">🎤</button>
+<input type="text" id="txt" placeholder="Type a message...">
+<button id="snd">Send</button>
+</div>
+<div id="log" style="margin-top:2rem;font-family:monospace;font-size:.8rem;color:#888"></div>
+<script>
+var ws=null,connected=false,recording=false,actx=null,mic=null;
+var cd=document.getElementById('cd'),ct=document.getElementById('ct'),t=document.getElementById('t');
+var mb=document.getElementById('m'),ti=document.getElementById('txt'),sb=document.getElementById('snd');
+var logEl=document.getElementById('log');
+
+function log(msg){
+    console.log(msg);
+    var d=document.createElement('div');
+    d.textContent=new Date().toLocaleTimeString()+' '+msg;
+    logEl.appendChild(d);
+}
+
+function setConn(o){
+    connected=o;
+    cd.className='d'+(o?' a':'');
+    ct.textContent=o?'Connected':'Disconnected';
+}
+
+function connect(){
+    var u=(location.protocol==='https:'?'wss:':'ws:')+'//'+location.host+'/ws';
+    log('Connecting to '+u);
+    
+    ws=new WebSocket(u);
+    ws.binaryType='arraybuffer';
+    
+    ws.onopen=function(){
+        log('WS OPENED');
+        setConn(true);
+    };
+    
+    ws.onclose=function(){
+        log('WS CLOSED');
+        setConn(false);
+        setTimeout(connect,2000);
+    };
+    
+    ws.onerror=function(e){
+        log('WS ERROR: '+JSON.stringify(e));
+    };
+    
+    ws.onmessage=function(e){
+        if(typeof e.data==='string'){
+            var msg=JSON.parse(e.data);
+            log('MSG: '+JSON.stringify(msg).substring(0,100));
+            if(msg.type==='transcript'){
+                t.textContent=msg.text;
+            }
+        }else{
+            log('AUDIO: '+e.data.byteLength+' bytes');
+            playAudio(e.data);
+        }
+    };
+}
+
+function playAudio(buf){
+    if(!actx)actx=new(window.AudioContext||window.webkitAudioContext)();
+    actx.decodeAudioData(buf).then(function(b){
+        var s=actx.createBufferSource();
+        s.buffer=b;
+        s.connect(actx.destination);
+        s.start();
+        log('Playing audio: '+b.duration.toFixed(1)+'s');
+    }).catch(function(e){
+        log('Audio error: '+e.message);
+    });
+}
+
+mb.onmousedown=function(){
+    if(!actx)actx=new(window.AudioContext||window.webkitAudioContext)();
+    navigator.mediaDevices.getUserMedia({audio:true}).then(function(st){
+        var mr=new MediaRecorder(st);
+        mr.ondataavailable=function(e){
+            if(e.data.size>0&&ws&&ws.readyState===1){
+                ws.send(e.data);
+            }
+        };
+        mr.start(100);
+        log('Recording started');
+        
+        mb.onmouseup=function(){
+            mr.stop();
+            st.getTracks().forEach(function(x){x.stop()});
+            if(ws&&ws.readyState===1)ws.send(JSON.stringify({type:'audio_end'}));
+            log('Recording stopped');
+        };
+    }).catch(function(e){
+        log('Mic error: '+e.message);
+    });
+};
+
+sb.onclick=function(){
+    var v=ti.value.trim();
+    if(v&&ws&&ws.readyState===1){
+        ws.send(JSON.stringify({type:'text',text:v}));
+        t.textContent=v;
+        ti.value='';
+        log('Sent: '+v);
+    }
+};
+
+ti.onkeydown=function(e){
+    if(e.key==='Enter')sb.click();
+};
+
+log('Page loaded, calling connect()...');
+connect();
+log('connect() returned');
+</script>
+</body>
+</html>

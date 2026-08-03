@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Voice Agent — Singularity</title>
+<style>
+body{margin:0;font-family:system-ui;background:#010103;color:#eee;display:flex;height:100vh;overflow:hidden}
+#ui{position:relative;z-index:1;display:flex;flex-direction:column;justify-content:flex-end;padding:2rem;max-width:600px;margin:0 auto;height:100vh;pointer-events:none}
+.p{background:rgba(10,10,20,.85);border:1px solid rgba(255,255,255,.1);border-radius:1rem;padding:1.5rem;margin-bottom:1rem;pointer-events:auto;backdrop-filter:blur(10px)}
+#s{display:flex;gap:1rem;margin-bottom:1rem;font-size:.75rem;text-transform:uppercase;letter-spacing:.1em}
+.d{width:8px;height:8px;border-radius:50%;background:#555;display:inline-block;margin-right:.5rem}
+.d.a{background:#4f4}.d.r{background:#f44}.d.sp{background:#4bf}
+#t{min-height:3rem;font-size:1.1rem;color:#ccc}
+#ctrl{display:flex;gap:.75rem}
+button,input{padding:.75rem 1rem;border:none;border-radius:.5rem;font-size:1rem}
+#m{background:#4f4;color:#000;cursor:pointer;min-width:80px}
+#m.rec{background:#f44;animation:p 1s infinite}
+#txt{flex:1;background:rgba(255,255,255,.1);color:#fff}
+#snd{background:#4bf;color:#000;cursor:pointer}
+@keyframes p{0%,100%{opacity:1}50%{opacity:.7}}
+</style>
+</head>
+<body>
+<div id="ui">
+<div class="p">
+<div id="s"><span><span class="d" id="cd"></span><span id="ct">Connecting...</span></span>
+<span><span class="d" id="md"></span><span id="mt">Idle</span></span></div>
+<div id="t">Press the mic and speak, or type a message below...</div>
+</div>
+<div class="p"><div id="ctrl">
+<button id="m">🎤</button>
+<input type="text" id="txt" placeholder="Type a message...">
+<button id="snd">Send</button>
+</div></div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "/vendor/three.module.js",
+    "three/addons/controls/OrbitControls.js": "/vendor/OrbitControls.module.js",
+    "lil-gui": "/vendor/lil-gui.esm.min.js"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ── Variables ─────────────────────────────────────────────────────────────────
+var ws = null;
+var connected = false;
+var recording = false;
+var actx = null;
+var mic = null;
+var audioContext = null;
+
+// ── DOM ───────────────────────────────────────────────────────────────────────
+var cd = document.getElementById('cd');
+var ct = document.getElementById('ct');
+var md = document.getElementById('md');
+var mt = document.getElementById('mt');
+var t = document.getElementById('t');
+var mb = document.getElementById('m');
+var ti = document.getElementById('txt');
+var sb = document.getElementById('snd');
+
+console.log('=== SCRIPT START ===');
+
+// 1. Scene Setup
+const scene = new THREE.Scene();
+const cam = new THREE.PerspectiveCamera(40, innerWidth/innerHeight, 0.1, 1000);
+cam.position.set(60, 30, 60);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" }); 
+renderer.setSize(innerWidth, innerHeight); 
+document.body.appendChild(renderer.domElement);
+
+const ctrl = new OrbitControls(cam, renderer.domElement); 
+ctrl.autoRotate = true;
+ctrl.enableDamping = true;
+
+// 2. Reactive Center Blob
+const blobMat = new THREE.ShaderMaterial({
+    uniforms: { 
+        uTime: { value: 0 },
+        uHue: { value: 0.6 },
+        uPulse: { value: 0.06 }
+    },
+    vertexShader: `
+        uniform float uTime;
+        uniform float uPulse;
+        varying vec3 vNormal; 
+        varying float vDisp;
+        
+        // Compact 3D Simplex Noise
+        vec4 permute(vec4 x){return mod(((x*34.0)+1.0)*x, 289.0);}
+        vec4 taylorInvSqrt(vec4 r){return 1.79284291400159 - 0.85373472095314 * r;}
+        float snoise(vec3 v){ 
+            const vec2 C = vec2(1./6., 1./3.); const vec4 D = vec4(0., .5, 1., 2.);
+            vec3 i=floor(v+dot(v,C.yyy)); vec3 x0=v-i+dot(i,C.xxx);
+            vec3 g=step(x0.yzx,x0.xyz); vec3 l=1.-g;
+            vec3 i1=min(g.xyz,l.zxy); vec3 i2=max(g.xyz,l.zxy);
+            vec3 x1=x0-i1+C.xxx; vec3 x2=x0-i2+2.*C.xxx; vec3 x3=x0-1.+3.*C.xxx;
+            i=mod(i,289.); vec4 p=permute(permute(permute(i.z+vec4(0.,i1.z,i2.z,1.))+i.y+vec4(0.,i1.y,i2.y,1.))+i.x+vec4(0.,i1.x,i2.x,1.));
+            vec3 ns=0.142857142857*D.wyz-D.xzx; vec4 j=p-49.*floor(p*ns.z*ns.z);
+            vec4 x_=floor(j*ns.z); vec4 y_=floor(j-7.*x_);
+            vec4 x=x_*ns.x+ns.yyyy; vec4 y=y_*ns.x+ns.yyyy;
+            vec4 h=1.-abs(x)-abs(y); vec4 b0=vec4(x.xy,y.xy); vec4 b1=vec4(x.zw,y.zw);
+            vec4 s0=floor(b0)*2.+1.; vec4 s1=floor(b1)*2.+1.; vec4 sh=-step(h,vec4(0.));
+            vec4 a0=b0.xzyw+s0.xzyw*sh.xxyy; vec4 a1=b1.xzyw+s1.xzyw*sh.zzww;
+            vec3 p0=vec3(a0.xy,h.x); vec3 p1=vec3(a0.zw,h.y); vec3 p2=vec3(a1.xy,h.z); vec3 p3=vec3(a1.zw,h.w);
+            vec4 norm=taylorInvSqrt(vec4(dot(p0,p0),dot(p1,p1),dot(p2,p2),dot(p3,p3)));
+            p0*=norm.x; p1*=norm.y; p2*=norm.z; p3*=norm.w;
+            vec4 m=max(.6-vec4(dot(x0,x0),dot(x1,x1),dot(x2,x2),dot(x3,x3)),0.);
+            m=m*m; return 42.*dot(m*m,vec4(dot(p0,x0),dot(p1,x1),dot(p2,x2),dot(p3,x3)));
+        }
+
+        void main() {
+            vNormal = normal;
+            float noise = snoise(position * 0.5 + uTime * 0.5);
+            vDisp = (noise * 0.8) + (uPulse * 6.0);
+            vec3 newPosition = position + normal * vDisp;
+            
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(newPosition, 1.0);
+        }
+    `,
+    fragmentShader: `
+        uniform float uHue;
+        varying vec3 vNormal; 
+        varying float vDisp;
+        
+        vec3 hsv2rgb(vec3 c) {
+            vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+            vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+            return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+        }
+
+        void main() {
+            vec3 color = hsv2rgb(vec3(uHue + vDisp * 0.05, 0.8, 0.9));
+            float light = dot(vNormal, normalize(vec3(1.0, 1.0, 1.0)));
+            gl_FragColor = vec4(color + light * 0.2, 1.0);
+        }
+    `
+});
+
+const blobMesh = new THREE.Mesh(new THREE.IcosahedronGeometry(4, 128), blobMat);
+scene.add(blobMesh);
+
+// 3. Accretion Disk 
+const diskMat = new THREE.ShaderMaterial({
+    uniforms: { 
+        uT:{value:0}, uM:{value:0.5}, uC:{value:1}, uO:{value:1}, 
+        uPulse:{value:0}, uReach:{value:25}, uTint:{value:new THREE.Color()} 
+    },
+    vertexShader: `
+        uniform float uT, uM, uC, uO, uPulse, uReach; uniform vec3 uTint; varying vec3 vC; varying float vOp;
+        void main() {
+            vec4 iPos = instanceMatrix * vec4(0.,0.,0.,1.);
+            float rO = length(iPos.xz);
+            
+            float r = (rO * uC) + (uPulse * smoothstep(uReach, 4., rO) * 30.0);
+            float ang = atan(iPos.z, iPos.x) + (uT * (1.5/sqrt(rO)) * uO);
+            
+            float yOff = sin(r*0.5+uT)*cos(ang*2.)*uM*4.  + (uPulse * smoothstep(uReach*.8, 4., rO) * sin(ang*8.+uT*10.) * 4.0);
+            vec3 mPos = vec3(cos(ang)*r, iPos.y + yOff, sin(ang)*r);
+            
+            float dop = dot(normalize(vec3(-sin(ang),0.,cos(ang))), normalize(cameraPosition - mPos));
+            
+            vC = uTint * mix(vec3(0.3,0.6,1.), vec3(1.,1.,1.), smoothstep(45.,4.,r)) * (1.3+dop*.7) * (1. + uPulse * smoothstep(uReach*1.2, 4., r) * 6.);
+            vOp = smoothstep(3.8,5.5,r) * (1.-smoothstep(38.,48.,r)) * .8;
+            
+            float c=cos(ang-atan(iPos.z,iPos.x)), s=sin(ang-atan(iPos.z,iPos.x));
+            gl_Position = projectionMatrix * viewMatrix * vec4(mPos + mat3(c,0,s,0,1,0,-s,0,c) * (instanceMatrix * vec4(position,0.)).xyz, 1.);
+        }`,
+    fragmentShader: `varying vec3 vC; varying float vOp; void main(){ gl_FragColor=vec4(vC,vOp); }`,
+    transparent: true, blending: 2, depthWrite: false
+});
+
+const inst = new THREE.InstancedMesh(new THREE.CylinderGeometry(.01,.12,2.2,3).rotateX(Math.PI/2), diskMat, 5000);
+const dum = new THREE.Object3D();
+for(let i=0; i<5000; i++) {
+    let r=5+Math.pow(Math.random(),1.3)*40, a=Math.random()*Math.PI*2;
+    dum.position.set(Math.cos(a)*r, (Math.random()-.5)*(8/r), Math.sin(a)*r);
+    dum.lookAt(dum.position.x+Math.sin(a), dum.position.y, dum.position.z-Math.cos(a));
+    dum.updateMatrix(); inst.setMatrixAt(i, dum.matrix);
+}
+scene.add(inst);
+
+diskMat.uniforms.uTint.value.setHSL(0.6, 0.8, 0.5);
+
+console.log('Three.js initialized');
+
+// ── TTS State ────────────────────────────────────────────────────────────────
+let isSpeaking = false;
+let targetPulse = 0.05;
+let currentPulse = 0.05;
+
+// ── WebSocket ─────────────────────────────────────────────────────────────────
+function setConn(o) {
+    connected = o;
+    cd.className = 'd' + (o ? ' a' : '');
+    ct.textContent = o ? 'Connected' : 'Disconnected';
+}
+
+function setMode(m) {
+    md.className = 'd';
+    if (m === 'rec') { md.classList.add('r'); mt.textContent = 'Recording'; }
+    else if (m === 'spk') { md.classList.add('sp'); mt.textContent = 'Speaking'; }
+    else if (m === 'thk') { md.classList.add('r'); mt.textContent = 'Thinking'; }
+    else { md.classList.add('a'); mt.textContent = 'Listening'; }
+}
+
+function connect() {
+    var u = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/ws';
+    console.log('WS connecting to', u);
+    
+    ws = new WebSocket(u);
+    ws.binaryType = 'arraybuffer';
+    
+    ws.onopen = function() {
+        console.log('WS OPENED!');
+        setConn(true);
+        setMode('idle');
+    };
+    
+    ws.onclose = function() {
+        console.log('WS closed');
+        setConn(false);
+        setMode('idle');
+        setTimeout(connect, 2000);
+    };
+    
+    ws.onerror = function(e) {
+        console.error('WS error:', e);
+    };
+    
+    ws.onmessage = function(e) {
+        if (typeof e.data === 'string') {
+            var msg = JSON.parse(e.data);
+            console.log('WS message:', msg);
+            if (msg.type === 'transcript') {
+                t.textContent = msg.text;
+            } else if (msg.type === 'done') {
+                setMode('idle');
+                isSpeaking = false;
+            }
+        } else {
+            console.log('WS binary:', e.data.byteLength, 'bytes');
+            playAudio(e.data);
+        }
+    };
+}
+
+// ── Audio Playback ────────────────────────────────────────────────────────────
+function playAudio(buf) {
+    if (!audioContext) {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    audioContext.decodeAudioData(buf).then(function(b) {
+        var s = audioContext.createBufferSource();
+        s.buffer = b;
+        s.connect(audioContext.destination);
+        s.start();
+        setMode('spk');
+        isSpeaking = true;
+        targetPulse = Math.min(0.35, targetPulse + 0.15 + Math.random() * 0.1);
+    }).catch(function(e) {
+        console.error('Audio decode error:', e);
+    });
+}
+
+// ── Recording ─────────────────────────────────────────────────────────────────
+mb.onmousedown = mb.ontouchstart = function() {
+    if (!audioContext) {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        audioContext.createAnalyser();
+    }
+    navigator.mediaDevices.getUserMedia({audio: true}).then(function(st) {
+        mic = st;
+        var mr = new MediaRecorder(st);
+        var chunks = [];
+        mr.ondataavailable = function(e) {
+            if (e.data.size > 0 && ws && ws.readyState === 1) {
+                ws.send(e.data);
+            }
+        };
+        mr.start(100);
+        recording = true;
+        mb.classList.add('rec');
+        setMode('rec');
+        
+        var stop = function() {
+            mr.stop();
+            st.getTracks().forEach(function(x) { x.stop(); });
+            recording = false;
+            mb.classList.remove('rec');
+            setMode('thk');
+            if (ws && ws.readyState === 1) {
+                ws.send(JSON.stringify({type: 'audio_end'}));
+            }
+        };
+        mb.onmouseup = mb.ontouchend = stop;
+    }).catch(function(e) {
+        console.error('Mic error:', e);
+        t.textContent = 'Mic denied: ' + e.message;
+    });
+};
+
+// ── Text Input ────────────────────────────────────────────────────────────────
+sb.onclick = function() {
+    var v = ti.value.trim();
+    if (v && ws && ws.readyState === 1) {
+        ws.send(JSON.stringify({type: 'text', text: v}));
+        t.textContent = v;
+        setMode('thk');
+        ti.value = '';
+    }
+};
+
+ti.onkeydown = function(e) {
+    if (e.key === 'Enter') sb.click();
+};
+
+// ── Animation Loop ────────────────────────────────────────────────────────────
+let clk = new THREE.Clock();
+function anim() {
+    let tt = clk.getElapsedTime();
+    blobMat.uniforms.uTime.value = diskMat.uniforms.uT.value = tt;
+    
+    // Smooth pulse logic
+    if (isSpeaking) {
+        currentPulse += (targetPulse - currentPulse) * 0.25; 
+        targetPulse += (0.05 - targetPulse) * 0.05;
+    } else {
+        let idlePulse = (Math.sin(tt * 4.0) * 0.04) + 0.02;
+        currentPulse += (idlePulse - currentPulse) * 0.1;
+        targetPulse = currentPulse;
+    }
+
+    blobMat.uniforms.uPulse.value = currentPulse;
+    diskMat.uniforms.uPulse.value = currentPulse;
+
+    inst.rotation.y += 0.0005;
+    blobMesh.rotation.y += 0.005;
+    blobMesh.rotation.x += 0.002;
+
+    ctrl.update(); 
+    renderer.render(scene, cam); 
+    requestAnimationFrame(anim);
+}
+
+window.onresize = function() { 
+    cam.aspect = innerWidth/innerHeight; 
+    cam.updateProjectionMatrix(); 
+    renderer.setSize(innerWidth, innerHeight);
+};
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+console.log('Calling connect()...');
+connect();
+console.log('Calling anim()...');
+anim();
+
+console.log('=== SCRIPT END ===');
+</script>
+</body>
+</html>

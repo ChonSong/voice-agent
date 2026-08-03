@@ -1,0 +1,671 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Voice Agent — Reactive Singularity</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { 
+    background: #010103; 
+    font-family: 'SF Pro Display', system-ui, sans-serif; 
+    overflow: hidden; 
+    color: #fff;
+  }
+  #canvas-container { position: fixed; inset: 0; z-index: 0; }
+  canvas { width: 100%; height: 100%; display: block; }
+
+  .overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 10;
+    pointer-events: none;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    padding: 24px;
+  }
+
+  .top-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .status-card {
+    background: rgba(255,255,255,0.04);
+    backdrop-filter: blur(16px);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 14px;
+    padding: 10px 14px;
+    pointer-events: auto;
+  }
+
+  .status-label {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: rgba(255,255,255,0.4);
+    margin-bottom: 2px;
+  }
+
+  .status-value {
+    font-size: 12px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .status-dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: #444;
+    transition: all 0.3s;
+  }
+  .status-dot.active { background: #00ff88; box-shadow: 0 0 8px #00ff8866; }
+  .status-dot.recording { background: #ff4444; box-shadow: 0 0 8px #ff444466; }
+  .status-dot.speaking { background: #4488ff; box-shadow: 0 0 8px #4488ff66; }
+
+  .transcript-card {
+    background: rgba(255,255,255,0.04);
+    backdrop-filter: blur(16px);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 14px;
+    padding: 12px 16px;
+    max-width: 560px;
+    width: 100%;
+    margin: 0 auto;
+    pointer-events: auto;
+  }
+
+  .transcript-text {
+    font-size: 14px;
+    line-height: 1.4;
+    min-height: 20px;
+    color: rgba(255,255,255,0.85);
+  }
+
+  .transcript-text.placeholder { color: rgba(255,255,255,0.25); }
+
+  .input-area {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 10px;
+    pointer-events: auto;
+  }
+
+  .mic-btn {
+    width: 48px; height: 48px;
+    border-radius: 50%;
+    border: 1.5px solid rgba(255,255,255,0.15);
+    background: rgba(255,255,255,0.06);
+    backdrop-filter: blur(16px);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+    color: #fff;
+  }
+  .mic-btn:hover { border-color: rgba(255,255,255,0.4); transform: scale(1.05); }
+  .mic-btn.recording {
+    border-color: #ff4444;
+    background: rgba(255, 68, 68, 0.12);
+    animation: pulse-rec 1.2s infinite;
+  }
+  @keyframes pulse-rec {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(255,68,68,0.3); }
+    50% { box-shadow: 0 0 0 12px rgba(255,68,68,0); }
+  }
+
+  .text-input {
+    flex: 1;
+    max-width: 440px;
+    background: rgba(255,255,255,0.04);
+    backdrop-filter: blur(16px);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 20px;
+    padding: 10px 16px;
+    color: #fff;
+    font-size: 13px;
+    outline: none;
+  }
+  .text-input:focus { border-color: rgba(255,255,255,0.2); }
+  .text-input::placeholder { color: rgba(255,255,255,0.2); }
+
+  .send-btn {
+    width: 36px; height: 36px;
+    border-radius: 50%;
+    border: 1px solid rgba(255,255,255,0.15);
+    background: rgba(255,255,255,0.06);
+    backdrop-filter: blur(16px);
+    color: #fff;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+  }
+  .send-btn:hover { background: rgba(255,255,255,0.12); }
+
+  .btn-icon { width: 16px; height: 16px; fill: currentColor; }
+
+  /* Audio level bars */
+  .audio-bars {
+    display: flex;
+    gap: 2px;
+    align-items: flex-end;
+    height: 16px;
+  }
+  .audio-bar {
+    width: 2px;
+    background: rgba(255,255,255,0.3);
+    border-radius: 1px;
+    transition: height 0.05s;
+  }
+  .audio-bar.active { background: #4488ff; }
+</style>
+</head>
+<body>
+
+<div id="canvas-container"></div>
+
+<div class="overlay">
+  <div class="top-bar">
+    <div class="status-card">
+      <div class="status-label">Connection</div>
+      <div class="status-value">
+        <span class="status-dot" id="conn-dot"></span>
+        <span id="conn-text">Disconnected</span>
+      </div>
+    </div>
+    <div class="status-card">
+      <div class="status-label">Mode</div>
+      <div class="status-value">
+        <span class="status-dot" id="mode-dot"></span>
+        <span id="mode-text">Idle</span>
+      </div>
+    </div>
+    <div class="status-card">
+      <div class="status-label">Audio</div>
+      <div class="audio-bars" id="audio-bars">
+        <div class="audio-bar" style="height: 4px"></div>
+        <div class="audio-bar" style="height: 6px"></div>
+        <div class="audio-bar" style="height: 3px"></div>
+        <div class="audio-bar" style="height: 8px"></div>
+        <div class="audio-bar" style="height: 5px"></div>
+        <div class="audio-bar" style="height: 4px"></div>
+        <div class="audio-bar" style="height: 7px"></div>
+        <div class="audio-bar" style="height: 3px"></div>
+        <div class="audio-bar" style="height: 5px"></div>
+        <div class="audio-bar" style="height: 4px"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="transcript-card">
+    <div class="status-label">Transcript</div>
+    <div class="transcript-text placeholder" id="transcript">Press the mic and speak, or type a message below...</div>
+  </div>
+
+  <div class="input-area">
+    <button class="mic-btn" id="mic-btn" title="Hold to talk">
+      <svg class="btn-icon" viewBox="0 0 24 24"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/><path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
+    </button>
+    <input type="text" class="text-input" id="text-input" placeholder="Type a message..." />
+    <button class="send-btn" id="send-btn" title="Send">
+      <svg class="btn-icon" viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+    </button>
+  </div>
+</div>
+
+<script type="module">
+import * as THREE from 'https://esm.sh/three@0.170.0';
+import { OrbitControls } from 'https://esm.sh/three@0.170.0/examples/jsm/controls/OrbitControls.js';
+
+// ── Scene Setup ──────────────────────────────────────────────────────────────
+const container = document.getElementById('canvas-container');
+const scene = new THREE.Scene();
+const cam = new THREE.PerspectiveCamera(40, innerWidth/innerHeight, 0.1, 1000);
+cam.position.set(60, 30, 60);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+container.appendChild(renderer.domElement);
+
+const ctrl = new OrbitControls(cam, renderer.domElement);
+ctrl.autoRotate = true;
+ctrl.enableDamping = true;
+ctrl.autoRotateSpeed = 0.5;
+
+// 2. Reactive Center Blob
+const blobMat = new THREE.ShaderMaterial({
+    uniforms: { 
+        uTime: { value: 0 },
+        uHue: { value: 0.6 },
+        uPulse: { value: 0.06 }
+    },
+    vertexShader: `
+        uniform float uTime;
+        uniform float uPulse;
+        varying vec3 vNormal; 
+        varying float vDisp;
+
+        // Classic Perlin noise (simplified, no mod289 nesting issues)
+        float hash(vec3 p) {
+            p = fract(p * vec3(443.897, 441.423, 437.195));
+            p += dot(p, p.yzx + 19.19);
+            return fract((p.x + p.y) * p.z);
+        }
+
+        float noise(vec3 p) {
+            vec3 i = floor(p);
+            vec3 f = fract(p);
+            f = f*f*(3.0-2.0*f);
+            return mix(mix(mix(hash(i+vec3(0,0,0)), hash(i+vec3(1,0,0)), f.x),
+                           mix(hash(i+vec3(0,1,0)), hash(i+vec3(1,1,0)), f.x), f.y),
+                       mix(mix(hash(i+vec3(0,0,1)), hash(i+vec3(1,0,1)), f.x),
+                           mix(hash(i+vec3(0,1,1)), hash(i+vec3(1,1,1)), f.x), f.y), f.z);
+        }
+
+        void main() {
+            vNormal = normalize(normalMatrix * normal);
+            float n = noise(position * 0.5 + uTime * 0.5);
+            vDisp = (n * 0.8) + (uPulse * 6.0);
+            vec3 newPosition = position + normal * vDisp;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(newPosition, 1.0);
+        }
+    `,
+    fragmentShader: `
+        uniform float uHue;
+        varying vec3 vNormal; 
+        varying float vDisp;
+            
+        vec3 hsv2rgb(vec3 c) {
+            vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+            vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+            return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+        }
+
+        void main() {
+            vec3 color = hsv2rgb(vec3(uHue + vDisp * 0.05, 0.8, 0.9));
+            float light = dot(vNormal, normalize(vec3(1.0, 1.0, 1.0)));
+            gl_FragColor = vec4(color + light * 0.2, 1.0);
+        }
+    `
+});
+
+const blobMesh = new THREE.Mesh(new THREE.IcosahedronGeometry(4, 128), blobMat);
+scene.add(blobMesh);
+
+// ── Accretion Disk ────────────────────────────────────────────────────────────
+const diskMat = new THREE.ShaderMaterial({
+    uniforms: { 
+        uT:{value:0}, uM:{value:0.5}, uC:{value:1}, uO:{value:1}, 
+        uPulse:{value:0}, uReach:{value:25}, uTint:{value:new THREE.Color()} 
+    },
+    vertexShader: `
+        uniform float uT, uM, uC, uO, uPulse, uReach; uniform vec3 uTint; varying vec3 vC; varying float vOp;
+        void main() {
+            vec4 iPos = instanceMatrix * vec4(0.,0.,0.,1.);
+            float rO = length(iPos.xz);
+            
+            float r = (rO * uC) + (uPulse * smoothstep(uReach, 4., rO) * 30.0);
+            float ang = atan(iPos.z, iPos.x) + (uT * (1.5/sqrt(rO)) * uO);
+            
+            float yOff = sin(r*0.5+uT)*cos(ang*2.)*uM*4.  + (uPulse * smoothstep(uReach*.8, 4., rO) * sin(ang*8.+uT*10.) * 4.0);
+            vec3 mPos = vec3(cos(ang)*r, iPos.y + yOff, sin(ang)*r);
+            
+            float dop = dot(normalize(vec3(-sin(ang),0.,cos(ang))), normalize(cameraPosition - mPos));
+            
+            vC = uTint * mix(vec3(0.3,0.6,1.), vec3(1.,1.,1.), smoothstep(45.,4.,r)) * (1.3+dop*.7) * (1. + uPulse * smoothstep(uReach*1.2, 4., r) * 6.);
+            vOp = smoothstep(3.8,5.5,r) * (1.-smoothstep(38.,48.,r)) * .8;
+            
+            float c=cos(ang-atan(iPos.z,iPos.x)), s=sin(ang-atan(iPos.z,iPos.x));
+            gl_Position = projectionMatrix * viewMatrix * vec4(mPos + mat3(c,0,s,0,1,0,-s,0,c) * (instanceMatrix * vec4(position,0.)).xyz, 1.);
+        }`,
+    fragmentShader: `varying vec3 vC; varying float vOp; void main(){ gl_FragColor=vec4(vC,vOp); }`,
+    transparent: true, blending: 2, depthWrite: false
+});
+
+const inst = new THREE.InstancedMesh(new THREE.CylinderGeometry(.01,.12,2.2,3).rotateX(Math.PI/2), diskMat, 5000);
+const dum = new THREE.Object3D();
+for(let i=0; i<5000; i++) {
+    let r=5+Math.pow(Math.random(),1.3)*40, a=Math.random()*Math.PI*2;
+    dum.position.set(Math.cos(a)*r, (Math.random()-.5)*(8/r), Math.sin(a)*r);
+    dum.lookAt(dum.position.x+Math.sin(a), dum.position.y, dum.position.z-Math.cos(a));
+    dum.updateMatrix(); inst.setMatrixAt(i, dum.matrix);
+}
+scene.add(inst);
+
+diskMat.uniforms.uTint.value.setHSL(0.6, 0.8, 0.5);
+
+// ── Smooth TTS Pulse Logic ────────────────────────────────────────────────────
+let isSpeaking = false;
+let targetPulse = 0.05;
+let currentPulse = 0.05;
+const baseline = 0.05;
+
+function setSpeaking(speaking) {
+    isSpeaking = speaking;
+    if (speaking) {
+        targetPulse = Math.min(0.35, targetPulse + 0.15);
+    }
+}
+
+// ── Audio Analysis ────────────────────────────────────────────────────────────
+let audioContext = null;
+let analyser = null;
+let micStream = null;
+let playbackAnalyser = null;
+let audioData = new Float32Array(1024);
+let audioBars = [];
+
+function initAudio() {
+    if (audioContext) return;
+    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    analyser = audioContext.createAnalyser();
+    analyser.fftSize = 64;
+    analyser.smoothingTimeConstant = 0.7;
+    
+    // Set up audio bars
+    audioBars = Array.from({ length: 10 }, () => ({
+        el: document.querySelector('#audio-bars .audio-bar:nth-child(&${audioBars.length + 1})'),
+        value: 0
+    }));
+}
+
+async function startMic() {
+    initAudio();
+    if (!audioContext) return;
+    micStream = await navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, sampleRate: 16000, echoCancellation: true, noiseSuppression: true }
+    });
+    const source = audioContext.createMediaStreamSource(micStream);
+    source.connect(analyser);
+}
+
+function getAudioLevel() {
+    if (!analyser) return 0;
+    const data = new Uint8Array(analyser.frequencyBinCount);
+    analyser.getByteFrequencyData(data);
+    let sum = 0;
+    for (let i = 0; i < data.length; i++) sum += data[i];
+    return sum / (data.length * 255);
+}
+
+function createPlaybackAnalyser() {
+    if (!audioContext) initAudio();
+    playbackAnalyser = audioContext.createAnalyser();
+    playbackAnalyser.fftSize = 64;
+    playbackAnalyser.smoothingTimeConstant = 0.7;
+    return audioContext.createAnalyser();
+}
+
+// ── WebSocket ─────────────────────────────────────────────────────────────────
+let ws = null;
+let isConnected = false;
+let isRecording = false;
+let audioChunks = [];
+
+const connDot = document.getElementById('conn-dot');
+const connText = document.getElementById('conn-text');
+const modeDot = document.getElementById('mode-dot');
+const modeText = document.getElementById('mode-text');
+const transcriptEl = document.getElementById('transcript');
+const micBtn = document.getElementById('mic-btn');
+const textInput = document.getElementById('text-input');
+const sendBtn = document.getElementById('send-btn');
+const audioBarsEl = document.getElementById('audio-bars');
+
+function setConnection(connected) {
+    isConnected = connected;
+    connDot.className = 'status-dot' + (connected ? ' active' : '');
+    connText.textContent = connected ? 'Connected' : 'Disconnected';
+}
+
+function setMode(mode) {
+    modeDot.className = 'status-dot';
+    if (mode === 'recording') { modeDot.classList.add('recording'); modeText.textContent = 'Recording'; }
+    else if (mode === 'speaking') { modeDot.classList.add('speaking'); modeText.textContent = 'Speaking'; }
+    else if (mode === 'thinking') { modeDot.classList.add('recording'); modeText.textContent = 'Thinking'; }
+    else { modeDot.classList.add('active'); modeText.textContent = 'Listening'; }
+}
+
+function connect() {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/ws`;
+    ws = new WebSocket(wsUrl);
+    ws.binaryType = 'arraybuffer';
+
+    ws.onopen = () => {
+        setConnection(true);
+        setMode('idle');
+    };
+
+    ws.onclose = () => {
+        setConnection(false);
+        setMode('idle');
+        setTimeout(connect, 2000);
+    };
+
+    ws.onerror = (e) => console.error('WS error:', e);
+
+    ws.onmessage = (event) => {
+        if (typeof event.data === 'string') {
+            const msg = JSON.parse(event.data);
+            if (msg.type === 'transcript') {
+                transcriptEl.textContent = msg.text;
+                transcriptEl.className = 'transcript-text';
+            } else if (msg.type === 'done') {
+                setMode('idle');
+            }
+        } else {
+            playAudioChunk(event.data);
+        }
+    };
+}
+
+// ── Audio Playback ────────────────────────────────────────────────────────────
+async function playAudioChunk(arrayBuffer) {
+    if (!audioContext) initAudio();
+    if (audioContext.state === 'suspended') await audioContext.resume();
+
+    try {
+        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+        const source = audioContext.createBufferSource();
+        source.buffer = audioBuffer;
+
+        const playAnalyser = audioContext.createAnalyser();
+        playAnalyser.fftSize = 64;
+        playAnalyser.smoothingTimeConstant = 0.7;
+        source.connect(playAnalyser);
+        playAnalyser.connect(audioContext.destination);
+
+        setMode('speaking');
+        setSpeaking(true);
+
+        const playData = new Uint8Array(playAnalyser.frequencyBinCount);
+        const origAnalyser = analyser;
+        analyser = {
+            frequencyBinCount: playData.length,
+            getByteFrequencyData(arr) {
+                playAnalyser.getByteFrequencyData(playData);
+                if (origAnalyser) {
+                    const origData = new Uint8Array(origAnalyser.frequencyBinCount);
+                    origAnalyser.getByteFrequencyData(origData);
+                    for (let i = 0; i < arr.length; i++) {
+                        arr[i] = Math.max(playData[i] || 0, origData[i] || 0);
+                    }
+                } else {
+                    arr.set(playData);
+                }
+            }
+        };
+
+        source.start();
+        source.onended = () => {
+            setSpeaking(false);
+            analyser = origAnalyser;
+        };
+    } catch (e) {
+        console.error('Audio playback error:', e);
+    }
+}
+
+// ── Recording ─────────────────────────────────────────────────────────────────
+let mediaRecorder = null;
+
+async function startRecording() {
+    await startMic();
+    isRecording = true;
+    audioChunks = [];
+    micBtn.classList.add('recording');
+    setMode('recording');
+    transcriptEl.textContent = 'Listening...';
+    transcriptEl.className = 'transcript-text placeholder';
+
+    const options = { audioBitsPerSecond: 256000 };
+    try {
+        mediaRecorder = new MediaRecorder(micStream, options);
+        mediaRecorder.ondataavailable = (e) => {
+            if (e.data.size > 0 && ws && ws.readyState === 1) {
+                e.data.arrayBuffer().then(buf => {
+                    ws.send(buf);
+                    audioChunks.push(buf);
+                });
+            }
+        };
+        mediaRecorder.start(100);
+    } catch (e) {
+        console.warn('MediaRecorder failed, using ScriptProcessor fallback');
+        const scriptNode = audioContext.createScriptProcessor(4096, 1, 1);
+        const source = audioContext.createMediaStreamSource(micStream);
+        source.connect(scriptNode);
+        scriptNode.connect(audioContext.destination);
+        scriptNode.onaudioprocess = (e) => {
+            if (!isRecording) return;
+            const input = e.inputBuffer.getChannelData(0);
+            const pcm = new Int16Array(input.length);
+            for (let i = 0; i < input.length; i++) {
+                pcm[i] = Math.max(-1, Math.min(1, input[i])) * 32767;
+            }
+            if (ws && ws.readyState === 1) {
+                ws.send(pcm.buffer);
+            }
+        };
+        mediaRecorder = { stop: () => { source.disconnect(); scriptNode.disconnect(); } };
+    }
+}
+
+function stopRecording() {
+    isRecording = false;
+    micBtn.classList.remove('recording');
+    if (mediaRecorder) {
+        mediaRecorder.stop();
+        mediaRecorder = null;
+    }
+    if (micStream) {
+        micStream.getTracks().forEach(t => t.stop());
+        micStream = null;
+    }
+    setMode('thinking');
+
+    if (ws && ws.readyState === 1) {
+        ws.send(JSON.stringify({ type: 'audio_end' }));
+    }
+}
+
+micBtn.addEventListener('mousedown', startRecording);
+micBtn.addEventListener('mouseup', stopRecording);
+micBtn.addEventListener('touchstart', (e) => { e.preventDefault(); startRecording(); });
+micBtn.addEventListener('touchend', (e) => { e.preventDefault(); stopRecording(); });
+
+sendBtn.addEventListener('click', () => {
+    const text = textInput.value.trim();
+    if (text && ws && ws.readyState === 1) {
+        ws.send(JSON.stringify({ type: 'text', text }));
+        transcriptEl.textContent = text;
+        transcriptEl.className = 'transcript-text';
+        setMode('thinking');
+        textInput.value = '';
+    }
+});
+
+textInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') sendBtn.click();
+});
+
+// ── Audio Bars Animation ─────────────────────────────────────────────────────
+function updateAudioBars() {
+    requestAnimationFrame(updateAudioBars);
+    if (!analyser) return;
+    
+    const data = new Uint8Array(analyser.frequencyBinCount);
+    analyser.getByteFrequencyData(data);
+    
+    const barEls = audioBarsEl.querySelectorAll('.audio-bar');
+    const step = Math.floor(data.length / barEls.length);
+    let total = 0;
+    
+    for (let i = 0; i < barEls.length; i++) {
+        const idx = i * step;
+        const val = data[idx] || 0;
+        total += val;
+        const height = Math.max(3, (val / 255) * 16);
+        barEls[i].style.height = height + 'px';
+        barEls[i].classList.toggle('active', val > 30);
+    }
+    
+    // Drive pulse from actual audio output
+    const level = total / (barEls.length * 255);
+    if (level > 0.1) {
+        targetPulse = Math.min(0.35, targetPulse + level * 0.2);
+    }
+}
+updateAudioBars();
+
+// ── Animation Loop ───────────────────────────────────────────────────────────
+let clk = new THREE.Clock();
+function anim() {
+    let t = clk.getElapsedTime();
+    blobMat.uniforms.uTime.value = diskMat.uniforms.uT.value = t;
+    
+    // Smooth pulse logic
+    if (isSpeaking) {
+        currentPulse += (targetPulse - currentPulse) * 0.25;
+        targetPulse += (baseline - targetPulse) * 0.05;
+    } else {
+        let idlePulse = (Math.sin(t * 4.0) * 0.04) + 0.02;
+        currentPulse += (idlePulse - currentPulse) * 0.1;
+        targetPulse = currentPulse;
+    }
+
+    blobMat.uniforms.uPulse.value = currentPulse;
+    diskMat.uniforms.uPulse.value = currentPulse;
+
+    inst.rotation.y += 0.0005;
+    blobMesh.rotation.y += 0.005;
+    blobMesh.rotation.x += 0.002;
+
+    ctrl.update(); 
+    renderer.render(scene, cam); 
+    requestAnimationFrame(anim);
+}
+
+window.onresize = () => { 
+    cam.aspect = innerWidth/innerHeight; 
+    cam.updateProjectionMatrix();
+    renderer.setSize(innerWidth, innerHeight);
+};
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+connect();
+anim();
+</script>
+</body>
+</html>

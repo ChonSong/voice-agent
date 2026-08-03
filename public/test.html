@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html>
+<head><title>WS Test</title></head>
+<body>
+<div id="status">Connecting...</div>
+<div id="messages"></div>
+<script>
+var status = document.getElementById('status');
+var messages = document.getElementById('messages');
+var ws = new WebSocket('wss://voice.codeovertcp.com/ws');
+ws.binaryType = 'arraybuffer';
+
+ws.onopen = function() {
+    status.textContent = 'Connected!';
+    ws.send(JSON.stringify({type: 'text', text: 'Hello from test page'}));
+};
+
+ws.onmessage = function(e) {
+    var div = document.createElement('div');
+    div.textContent = typeof e.data === 'string' ? e.data : 'Binary: ' + e.data.byteLength + ' bytes';
+    messages.appendChild(div);
+};
+
+ws.onerror = function(e) {
+    status.textContent = 'Error: ' + e.type;
+};
+
+ws.onclose = function() {
+    status.textContent = 'Closed';
+};
+
+// Poll for open state
+setInterval(function() {
+    if (ws.readyState === 1 && status.textContent !== 'Connected!') {
+        status.textContent = 'Connected (poll)!';
+    }
+}, 100);
+</script>
+</body>
+</html>
